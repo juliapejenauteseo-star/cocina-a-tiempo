@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';import * as S from './src/shopping.js';import * as P from './src/planning.js';import {recipes} from './src/catalogue.js';let total=0;const test=(n,f)=>{f();total++;console.log('PASS '+n)};
+const item={name:'Arroz',qty:100,unit:'g'},bought=[{qty:500,unit:'g'}];
+test('B01 añadido manual no convierte comprado en pendiente ni compra lo nuevo',()=>{const p=S.shoppingQuantity(item,null,bought,true);assert.equal(p.qty,100);assert.equal(p.status,'open');assert.equal(bought[0].qty,500)});
+test('B01 receta descuenta lo comprado y mantiene nuevas necesidades pendientes',()=>{assert.equal(S.shoppingQuantity({...item,qty:600},null,bought,false).qty,100);assert.equal(S.shoppingQuantity({...item,qty:300},null,bought,false).changed,false)});
+test('B01 total agrupado se revisa y valida',()=>{assert.equal(S.shoppingQuantity(item,{qty:500,unit:'g',status:'open'},[],true).qty,600);assert.throws(()=>S.shoppingQuantity({...item,qty:1},{qty:1e9,unit:'g',status:'open'},[],true))});
+test('B03 caducados reinicia búsqueda y ubicación',()=>assert.deepEqual(S.expiredFilters(),{search:'',place:'Todas',value:'expired'}));
+test('B05 nombres vacíos y cantidades inválidas se rechazan',()=>{for(const name of ['', '   ','x'.repeat(61)])assert.throws(()=>S.validateShopping({...item,name}));for(const qty of [0,-1,NaN,1e9+1])assert.throws(()=>S.validateShopping({...item,qty}))});
+test('B06 edición conserva cantidad y unidad revisadas',()=>assert.deepEqual(S.validateShopping({name:' Arroz ',qty:.3,unit:'kg'}),{name:'Arroz',qty:.3,unit:'kg'}));
+const r={baseServings:1,ingredients:[['Tomates',250,'g']]},day='2026-10-11',lots=[{id:'old',name:'Tomates',qty:300,unit:'g',date:'2026-10-12'},{id:'new',name:'Tomates',qty:400,unit:'g',date:'2026-10-15'}],i=P.requirements(r,1,lots,day)[0];
+test('B07 propuesta usa lote próximo a fecha',()=>assert.equal(P.consumption(r,1,lots,day).changes[0].id,'old'));
+test('B07 permite otro lote y cantidad suficiente sin editar inventario',()=>{const c=P.confirmPortion(i,lots,day,{new:280});const p=P.consumption(r,1,lots,day,{tomates:c});assert.equal(p.changes[0].id,'new');assert.equal(p.changes[0].after.qty,120);assert.equal(lots[1].qty,400)});
+test('B07 adaptación explícita menor que referencia avisa',()=>{const c=P.confirmPortion(i,lots,day,{old:200},null,{adjustReference:true});const p=P.consumption(r,1,lots,day,{tomates:c});assert(p.warnings.length);assert.deepEqual(P.purchase(r,1,lots,day,{tomates:c}),[])});
+test('B07 inferior sin revisión explícita bloquea',()=>assert.throws(()=>P.consumption(r,1,lots,day,{tomates:P.confirmPortion(i,lots,day,{old:200})})));
+test('B07 cambios concurrentes y cantidades excesivas se detienen',()=>{const c=P.confirmPortion(i,lots,day,{new:280});assert.throws(()=>P.consumption(r,1,[lots[0],{...lots[1],qty:390}],day,{tomates:c}));assert.throws(()=>P.confirmPortion(i,lots,day,{old:301}))});
+test('B08 preferencias excluyen recetas normalizadas en todas las propuestas',()=>{assert(!S.eligibleRecipe(recipes.find(r=>r.name==='Tortilla de espinacas'),{excluded:['Huevo']}));assert(!S.eligibleRecipe({complete:true,time:10,ingredients:[['Pasta',10,'g']]},{excluded:['Macarrones']}))});
+test('B08 fresco y conserva no se confunden',()=>assert(S.eligibleRecipe({complete:true,time:10,ingredients:[['Atún fresco',10,'g']]},{excluded:['Atún en conserva']})));
+test('B10 singular y operación solo de compra',()=>{assert.equal(S.countWord(1,'lote','lotes'),'1 lote');assert.equal(S.countWord(1,'ración','raciones'),'1 ración');assert.match(S.operationMessage([{type:'shop'}]),/despensa no ha cambiado/);assert.match(S.operationMessage([{type:'lot'}]),/Despensa actualizada/)});
+console.log('TOTAL '+total+' satisfactorias');

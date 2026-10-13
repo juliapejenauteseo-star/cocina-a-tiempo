@@ -1,0 +1,253 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    function homePath(h) { return /databases/$(database)/documents/households/$(h); }
+    function profilePath(u) { return /databases/$(database)/documents/profiles/$(u); }
+    function invitationPath(t) { return /databases/$(database)/documents/invitations/$(t); }
+    function operationPath(h, o) { return /databases/$(database)/documents/households/$(h)/operations/$(o); }
+    function member(h) { return signed() && request.auth.uid in get(homePath(h)).data.members; }
+    function owner(h) { return signed() && get(homePath(h)).data.owner == request.auth.uid; }
+    match /profiles/{u} {
+      allow get: if signed() && request.auth.uid == u;
+      allow create: if signed() && request.auth.uid == u
+        && request.resource.data.keys().hasOnly(['homeId'])
+        && u in getAfter(homePath(request.resource.data.homeId)).data.members;
+      allow list, update, delete: if false;
+    }
+    match /households/{h} {
+      allow get: if signed() && request.auth.uid in resource.data.members;
+      allow list, delete: if false;
+      allow create: if signed()
+        && request.resource.data.keys().hasOnly(['owner','members','qty','version','lastOperationId','lastInviteId','receipts'])
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.qty == 10 && request.resource.data.version == 0
+        && request.resource.data.lastOperationId == '' && request.resource.data.lastInviteId == ''
+        && request.resource.data.receipts == {}
+        && getAfter(profilePath(request.auth.uid)).data.homeId == h;
+      allow update: if signed() && (removeMember()
+        || (!(request.auth.uid in resource.data.members) && acceptInvitation())
+        || (request.auth.uid in resource.data.members && useStock()));
+      function removeMember() {
+        return resource.data.owner == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+          && request.resource.data.members is list
+          && resource.data.owner in request.resource.data.members
+          && request.resource.data.members.toSet().hasOnly(resource.data.members);
+      }
+      function acceptInvitation() {
+        let n = request.resource.data;
+        let i = getAfter(invitationPath(n.lastInviteId)).data;
+        return !(request.auth.uid in resource.data.members)
+          && n.diff(resource.data).affectedKeys().hasOnly(['members','lastInviteId'])
+          && n.members.toSet() == resource.data.members.toSet().union([request.auth.uid].toSet())
+          && n.members.size() == resource.data.members.size() + 1
+          && i.homeId == h && i.recipient == request.auth.uid
+          && get(invitationPath(n.lastInviteId)).data.usedBy == ''
+          && i.usedBy == request.auth.uid && i.expiresAt > request.time
+          && getAfter(profilePath(request.auth.uid)).data.homeId == h;
+      }
+      function useStock() {
+        let n = request.resource.data;
+        let o = n.receipts[n.lastOperationId];
+        return request.auth.uid in resource.data.members
+          && n.diff(resource.data).affectedKeys().hasOnly(['qty','version','lastOperationId','receipts'])
+          && n.qty is int && n.qty >= 0 && n.qty < resource.data.qty
+          && n.version is int && n.version == resource.data.version + 1
+          && n.lastOperationId is string && n.lastOperationId != ''
+          && n.receipts is map
+          && n.receipts.diff(resource.data.receipts).affectedKeys() == [n.lastOperationId].toSet()
+          && n.receipts.diff(resource.data.receipts).addedKeys() == [n.lastOperationId].toSet()
+          && o.keys().hasOnly(['actor','amount','version','beforeQty','afterQty'])
+          && o.amount is int && o.amount > 0
+          && o.actor == request.auth.uid && o.amount == resource.data.qty - n.qty
+          && o.version == n.version && o.beforeQty == resource.data.qty && o.afterQty == n.qty;
+      }
+      match /operations/{o} {
+        allow read, write: if false;
+      }
+    }
+    match /invitations/{t} {
+      allow get: if signed() && (resource.data.recipient == request.auth.uid || resource.data.owner == request.auth.uid);
+      allow list, delete: if false;
+      allow create: if signed()
+        && request.resource.data.keys().hasOnly(['homeId','owner','recipient','expiresAt','usedBy'])
+        && owner(request.resource.data.homeId)
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.recipient is string
+        && request.resource.data.expiresAt is timestamp && request.resource.data.usedBy == '';
+      allow update: if signed() && resource.data.recipient == request.auth.uid
+        && resource.data.usedBy == '' && resource.data.expiresAt > request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy'])
+        && request.resource.data.usedBy == request.auth.uid
+        && request.auth.uid in getAfter(homePath(resource.data.homeId)).data.members
+        && getAfter(profilePath(request.auth.uid)).data.homeId == resource.data.homeId;
+    }
+    function hp(h) { return /databases/$(database)/documents/homes/$(h); }
+    function ap(u) { return /databases/$(database)/documents/accounts/$(u); }
+    function lp(t) { return /databases/$(database)/documents/links/$(t); }
+    function ep(h,t,k) { return t == 'lot' ? /databases/$(database)/documents/homes/$(h)/lots/$(k) : /databases/$(database)/documents/homes/$(h)/shopping/$(k); }
+    function rp(h,o) { return /databases/$(database)/documents/homes/$(h)/receipts/$(o); }
+    function hm(h) { return signed() && request.auth.uid in get(hp(h)).data.members; }
+    function ho(h) { return signed() && get(hp(h)).data.owner == request.auth.uid; }
+    function text(v,max) { return v is string && v.size() > 0 && v.size() <= max; }
+    function amount(v) { return v is number && v >= 0 && v <= 1000000000; }
+    match /accounts/{u} {
+      allow get: if signed() && u == request.auth.uid;
+      allow list, delete: if false;
+      allow create: if signed() && u == request.auth.uid && request.resource.data.keys().hasOnly(['homeId']) && u in getAfter(hp(request.resource.data.homeId)).data.members;
+      allow update: if signed() && u == request.auth.uid && request.resource.data == resource.data;
+    }
+    match /homes/{h} {
+      allow get: if signed() && request.auth.uid in resource.data.members;
+      allow list, delete: if false;
+      allow create: if signed() && request.resource.data.keys().hasOnly(['name','owner','members','memberNames','servings','noticeDays','vegetarian','excludedIngredients','timezone','version','lastInvite','createdAt'])
+        && request.resource.data.owner == request.auth.uid && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.memberNames.keys().toSet() == [request.auth.uid].toSet() && text(request.resource.data.memberNames[request.auth.uid],40)
+        && text(request.resource.data.name,60) && request.resource.data.servings == 2 && request.resource.data.noticeDays == 2 && request.resource.data.vegetarian == false
+        && request.resource.data.timezone == 'Europe/Madrid' && request.resource.data.version == 0 && request.resource.data.lastInvite == ''
+        && validPreferences(request.resource.data) && request.resource.data.createdAt is timestamp && getAfter(ap(request.auth.uid)).data.homeId == h;
+      allow update: if signed() && (homeSettings() || retire() || acceptLink());
+      function validPreferences(n) { return !n.keys().hasAny(['excludedIngredients']) || (n.excludedIngredients is list && n.excludedIngredients.size() <= 50 && n.excludedIngredients.toSet().hasOnly(["Arroz","Tomates","Espinacas","Aceite de oliva","Sal","Garbanzos cocidos","Huevos","Pasta","Queso rallado","Patatas","Zanahorias","Calabacín","Cebolla","Lentejas cocidas","Pollo en filetes","Merluza","Limón","Atún en conserva","Pan","Queso fresco","Cuscús","Yogur natural","Copos de avena","Plátanos","Judías verdes"])); }
+      function homeSettings() {
+        return request.auth.uid == resource.data.owner && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['servings','noticeDays','vegetarian','excludedIngredients','timezone','version'])
+          && request.resource.data.servings is int && request.resource.data.servings >= 1 && request.resource.data.servings <= 12
+          && request.resource.data.noticeDays is int && request.resource.data.noticeDays >= 0 && request.resource.data.noticeDays <= 30
+          && validPreferences(request.resource.data) && request.resource.data.vegetarian is bool && request.resource.data.timezone == 'Europe/Madrid' && request.resource.data.version == resource.data.version + 1;
+      }
+      function retire() {
+        let n = request.resource.data;
+        return request.auth.uid == resource.data.owner && n.diff(resource.data).affectedKeys().hasOnly(['members','memberNames'])
+          && n.members is list && resource.data.owner in n.members && n.members.toSet().hasOnly(resource.data.members)
+          && n.memberNames.keys().toSet() == n.members.toSet()
+          && n.memberNames.diff(resource.data.memberNames).addedKeys().size() == 0
+          && n.memberNames.diff(resource.data.memberNames).changedKeys().size() == 0;
+      }
+      function acceptLink() {
+        let n = request.resource.data;
+        let i = getAfter(lp(n.lastInvite)).data;
+        return !(request.auth.uid in resource.data.members) && n.diff(resource.data).affectedKeys().hasOnly(['members','memberNames','lastInvite'])
+          && n.members.toSet() == resource.data.members.toSet().union([request.auth.uid].toSet()) && n.members.size() == resource.data.members.size() + 1
+          && n.memberNames.diff(resource.data.memberNames).affectedKeys() == [request.auth.uid].toSet() && text(n.memberNames[request.auth.uid],40)
+          && get(lp(n.lastInvite)).data.usedBy == '' && i.usedBy == request.auth.uid && i.homeId == h && i.expiresAt > request.time
+          && getAfter(ap(request.auth.uid)).data.homeId == h;
+      }
+      function audited(type,key) {
+        let n = request.resource.data;
+        let undoing = n.lastOp.matches('^undo-.*');
+        let base = getAfter(rp(h,undoing ? n.lastOp.replace('^undo-','') : n.lastOp)).data;
+        let r = undoing && !base.keys().hasAny(['undoAfter']) ? getAfter(rp(h,n.lastOp)).data : base;
+        return r.actor == request.auth.uid && r.type == type && r.target == key && n.version == resource.data.version + 1
+          && (undoing && base.keys().hasAny(['undoAfter']) ? r.undoAfter == n && r.after == resource.data : r.after == n && r.before == resource.data);
+      }
+      function undoChange() {
+        let n = request.resource.data;
+        let base = getAfter(rp(h,n.lastOp.replace('^undo-',''))).data;
+        return n.lastOp.matches('^undo-.*') && (base.keys().hasAny(['undoAfter']) ? base.undoAfter == n : getAfter(rp(h,n.lastOp)).data.kind == 'undo');
+      }
+      function operationKind() {
+        let n = request.resource.data;
+        let undoing = n.lastOp.matches('^undo-.*');
+        let base = getAfter(rp(h,undoing ? n.lastOp.replace('^undo-','') : n.lastOp)).data;
+        return undoing && base.keys().hasAny(['undoAfter']) ? 'undo' : getAfter(rp(h,n.lastOp)).data.kind;
+      }
+      function created(type,key) {
+        let n = request.resource.data;
+        let r = getAfter(rp(h,n.lastOp)).data;
+        return r.actor == request.auth.uid && r.type == type && r.target == key && r.before == null && r.after == n && n.version == 0;
+      }
+      function validLot(n) {
+        return n.keys().hasOnly(['name','qty','unit','place','date','dateType','sourceShop','createdAt','version','lastOp'])
+          && text(n.name,60) && amount(n.qty) && (n.unit != 'ud' || n.qty % 1 == 0) && n.unit in ['g','ml','ud','kg','l'] && n.place in ['Nevera','Congelador','Despensa']
+          && n.date is string && ((n.date == '' && n.dateType == '') || (n.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && n.dateType in ['Caducidad','Consumo preferente']))
+          && n.sourceShop is string && n.createdAt is timestamp && n.version is int && text(n.lastOp,180);
+      }
+      function validShop(n) {
+        return n.keys().hasOnly(['name','qty','unit','status','lotId','createdAt','version','lastOp'])
+          && text(n.name,60) && amount(n.qty) && n.qty > 0 && (n.unit != 'ud' || n.qty % 1 == 0) && n.unit in ['g','ml','ud','kg','l']
+          && n.status in ['open','bought','incorporated','removed'] && n.lotId is string && n.createdAt is timestamp && n.version is int && text(n.lastOp,180);
+      }
+      function shopSource(k) {
+        let n = request.resource.data;
+        let s = getAfter(ep(h,'shop',n.sourceShop)).data;
+        return s.status == 'incorporated' && s.lotId == k && s.name == n.name && s.qty == n.qty && s.unit == n.unit
+          && getAfter(rp(h,s.lastOp)).data.group == getAfter(rp(h,n.lastOp)).data.group;
+      }
+      function incorporation(k) {
+        let n = request.resource.data;
+        let l = getAfter(ep(h,'lot',n.lotId)).data;
+        return resource.data.status in ['open','bought']
+          && l.sourceShop == k && l.name == n.name && l.qty == n.qty && l.unit == n.unit
+          && getAfter(rp(h,l.lastOp)).data.group == getAfter(rp(h,n.lastOp)).data.group;
+      }
+      match /lots/{k} {
+        allow read: if hm(h);
+        allow delete: if false;
+        allow create: if hm(h) && validLot(request.resource.data) && request.resource.data.qty > 0 && created('lot',k)
+          && (request.resource.data.sourceShop == '' || shopSource(k));
+        allow update: if hm(h) && validLot(request.resource.data) && audited('lot',k)
+          && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.sourceShop == resource.data.sourceShop
+          && (!(operationKind() in ['cook','consume','discard']) || (request.resource.data.qty < resource.data.qty && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qty','version','lastOp'])));
+      }
+      match /shopping/{k} {
+        allow read: if hm(h);
+        allow delete: if false;
+        allow create: if hm(h) && validShop(request.resource.data) && request.resource.data.status == 'open' && request.resource.data.lotId == '' && created('shop',k);
+        allow update: if hm(h) && validShop(request.resource.data) && audited('shop',k) && request.resource.data.createdAt == resource.data.createdAt
+          && ((resource.data.status != 'incorporated' && request.resource.data.status != 'incorporated' && request.resource.data.lotId == '')
+            || (request.resource.data.status == 'incorporated' && (incorporation(k) || (undoChange() && getAfter(ep(h,'lot',request.resource.data.lotId)).data.sourceShop == k)))
+            || (resource.data.status == 'incorporated' && request.resource.data.status == 'open' && request.resource.data.lotId == '' && (getAfter(rp(h,request.resource.data.lastOp)).data.kind == 'shopping' || (undoChange() && getAfter(ep(h,'lot',resource.data.lotId)).data.qty == 0)))
+            || (resource.data.status == 'incorporated' && request.resource.data.status == 'bought' && request.resource.data.lotId == '' && undoChange()));
+      }
+      match /receipts/{o} {
+        allow read: if hm(h);
+          allow delete: if false;
+          allow update: if hm(h) && correctionReceipt();
+          function correctionReceipt() {
+            let old = resource.data;
+            let n = request.resource.data;
+            let after = n.undoAfter;
+            return !old.keys().hasAny(['undoAfter']) && old.actor == request.auth.uid && old.kind != 'undo'
+              && n.diff(old).affectedKeys().hasOnly(['undoAfter','undoAt']) && n.undoAt == request.time
+              && request.time - old.createdAt < duration.value(30,'m')
+              && after == getAfter(ep(h,old.type,old.target)).data && after.lastOp == 'undo-' + o && after.version == old.after.version + 1
+              && ((old.before != null && after.diff(old.before).affectedKeys().hasOnly(['version','lastOp']))
+              || (old.before == null && old.type == 'lot' && after.qty == 0 && after.diff(old.after).affectedKeys().hasOnly(['qty','version','lastOp']))
+              || (old.before == null && old.type == 'shop' && after.status == 'removed' && after.diff(old.after).affectedKeys().hasOnly(['status','version','lastOp'])));
+          }
+        allow create: if hm(h) && validReceipt();
+        function validReceipt() {
+          let n = request.resource.data;
+          let after = getAfter(ep(h,n.type,n.target)).data;
+          return n.keys().hasOnly(['actor','type','target','before','after','group','kind','undoOf','createdAt'])
+            && n.actor == request.auth.uid && n.type in ['lot','shop'] && text(n.target,80) && text(n.group,80)
+            && o == n.group + '_' + n.type + '_' + n.target && n.kind in ['add','edit','cook','consume','discard','shopping','incorporate','undo']
+            && n.after == after && after.lastOp == o && n.createdAt == request.time && n.undoOf is string
+            && ((n.kind != 'undo' && n.undoOf == '') || undoReceipt(n));
+        }
+        function undoReceipt(n) {
+          let old = get(rp(h,n.undoOf + '_' + n.type + '_' + n.target)).data;
+          return n.group == 'undo-' + old.group && old.actor == request.auth.uid && old.kind != 'undo'
+            && request.time - old.createdAt < duration.value(30,'m') && n.before == old.after
+            && ((old.before != null && n.after.diff(old.before).affectedKeys().hasOnly(['version','lastOp']))
+            || (old.before == null && n.type == 'lot' && n.after.qty == 0 && n.after.diff(old.after).affectedKeys().hasOnly(['qty','version','lastOp']))
+            || (old.before == null && n.type == 'shop' && n.after.status == 'removed' && n.after.diff(old.after).affectedKeys().hasOnly(['status','version','lastOp'])));
+        }
+      }
+    }
+    match /links/{t} {
+      allow get: if signed();
+      allow list, delete: if false;
+      allow create: if signed() && t.matches('^[0-9a-f]{64}$') && request.resource.data.keys().hasOnly(['homeId','owner','expiresAt','usedBy','createdAt'])
+        && ho(request.resource.data.homeId) && request.resource.data.owner == request.auth.uid && request.resource.data.usedBy == ''
+        && request.resource.data.expiresAt > request.time && request.resource.data.expiresAt <= request.time + duration.value(7,'d') && request.resource.data.createdAt is timestamp;
+      allow update: if signed() && resource.data.usedBy == '' && resource.data.expiresAt > request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy']) && request.resource.data.usedBy == request.auth.uid
+        && request.auth.uid in getAfter(hp(resource.data.homeId)).data.members && getAfter(ap(request.auth.uid)).data.homeId == resource.data.homeId;
+    }
+
+  }
+}
+
+

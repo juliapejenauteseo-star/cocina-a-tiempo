@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import {voiceProposal,changedVoiceFields} from './src/voice-form.js';
+let n=0;const test=(name,f)=>{f();n++;console.log('PASS '+name)};
+test('Propuesta completa, sin guardar',()=>assert.deepEqual(voiceProposal('Tomates dos unidades fecha 15/10/2026').values,{name:'tomates',qty:'2',unit:'ud',date:'2026-10-15'}));
+test('Unidad ausente no se inventa',()=>assert(!('unit' in voiceProposal('dos tomates 15 de octubre de 2026').values)));
+test('Cantidad ausente no se inventa',()=>assert(!('qty' in voiceProposal('tomates').values)));
+test('Fecha imposible no se propone',()=>assert(!('date' in voiceProposal('Tomates dos unidades fecha 31/02/2026').values)));
+test('Campos ya escritos exigen confirmación',()=>assert.deepEqual(changedVoiceFields({name:'tomates',qty:'2'},{name:'arroz',qty:'1',unit:'g'}),['name','qty']));
+test('Campos ausentes no se borran',()=>assert.deepEqual(changedVoiceFields({name:'tomates'},{name:'',qty:'7',unit:'kg',date:'2026-12-01'}),[]));
+test('Valores iguales no exigen sustitución',()=>assert.deepEqual(changedVoiceFields({name:'tomates',qty:'2'},{name:'tomates',qty:'2'}),[]));
+test('Integración limitada al alta y conserva validación',()=>{const s=fs.readFileSync('src/app.js','utf8');assert(s.includes('if(!lot&&!shop)foodVoice=bindFoodVoice'));assert(s.includes('M.validateLot(props)'));assert(s.includes('if(foodVoice?.active)'));assert(s.includes('foodVoice?.dispose();foodVoice=null;'));});
+test('Controlador no escribe a Firebase ni guarda por voz',()=>{const s=fs.readFileSync('src/voice-form.js','utf8');assert(!/firebase|fetch\(|addLot|commit\(|submit\(/.test(s));assert(s.includes('if(session.active||!proposal)return;'));});
+test('Dictado precede a campos manuales',()=>{const s=fs.readFileSync('src/app.js','utf8'),start=s.indexOf('function lotForm('),end=s.indexOf('function review(',start),form=s.slice(start,end);assert(form.indexOf('voiceFormHTML()')<form.indexOf('id="lot-name"'));});
+test('Revisión desconectada conserva formulario',()=>{const s=fs.readFileSync('src/app.js','utf8');assert(s.includes('M.validateLot(props);if(!canWrite())throw'));});
+console.log('TOTAL '+n+' regresiones de integración. No son reconocimiento real.');

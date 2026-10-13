@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import * as P from './src/planning.js';
+import * as S from './src/shopping.js';
+import {readFileSync} from 'node:fs';
+const tests=[];const test=(name,fn)=>{fn();tests.push(name);console.log('PASS '+name);};
+const day='2026-10-11',r={baseServings:2,complete:true,time:20,vegetarian:true,ingredients:[['Huevos',4,'ud']]},lots=[{id:'eggs',name:'Huevos',qty:8,unit:'ud',date:''}],i=P.requirements(r,2,lots,day)[0];
+test('R01 adaptación se conserva al confirmar sin cambiar cantidades',()=>{const first=P.confirmPortion(i,lots,day,{eggs:2},null,{adjustReference:true});const second=P.confirmPortion(i,lots,day,Object.fromEntries(first.selected.map(x=>[x.lot.id,x.qty])),first.measured,{adjustReference:first.adjustedReference});assert(second.adjustedReference);assert.equal(P.consumption(r,2,lots,day,{huevos:second}).changes[0].after.qty,6);});
+test('R01 cambio concurrente invalida selección',()=>{const c=P.confirmPortion(i,lots,day,{eggs:2},null,{adjustReference:true});assert.throws(()=>P.consumption(r,2,[{...lots[0],qty:7}],day,{huevos:c}),/han cambiado/);});
+test('R03 selección fraccionaria ud rechazada',()=>{for(const qty of [1.5,1.0004])assert.throws(()=>P.confirmPortion(i,lots,day,{eggs:qty},null,{adjustReference:true}),/piezas enteras/);});
+test('R03 compra y edición rechazan ud fraccionaria sin redondear',()=>{for(const qty of [1.5,1.0004])assert.throws(()=>S.validateShopping({name:'Huevos',qty,unit:'ud'}),/piezas enteras/);assert.equal(S.validateShopping({name:'Huevos',qty:2,unit:'ud'}).qty,2);});
+test('R03 masas y líquidos conservan decimales',()=>{for(const unit of ['g','kg','ml','l'])assert.equal(S.validateShopping({name:'Ficticio',qty:1.5,unit}).qty,1.5);});
+test('R03 receta fraccionaria exige revisar piezas',()=>{assert.throws(()=>P.consumption({...r,ingredients:[['Huevos',3,'ud']]},1,lots,day),/piezas enteras/);});
+test('R03 lote anterior fraccionario no se redondea automáticamente',()=>{const old=[{...lots[0],qty:2.5}];assert.throws(()=>P.consumption({...r,ingredients:[['Huevos',2,'ud']]},2,old,day),/piezas enteras/);assert.equal(old[0].qty,2.5);});
+test('R04 filtros ocultan receta que sí encaja con existencias',()=>{assert(S.matchesRecipeTab(r,'ready',2,lots,day));assert(!S.eligibleRecipe(r,{excluded:['Huevos']}));assert(S.eligibleRecipe(r,{excluded:[]}));});
+test('R04 distingue vistas pendiente y compra',()=>{const other={...r,ingredients:[['Huevos',400,'g']]};assert(S.matchesRecipeTab(other,'pending',2,lots,day));assert(!S.matchesRecipeTab(other,'ready',2,lots,day));assert(S.matchesRecipeTab(r,'missing',2,[],day));});
+test('R01 plantilla recupera realmente la casilla',()=>{const s=readFileSync('src/app.js','utf8');assert(s.includes("?`<label class=\"checkbox-line\"><input id=\"adjust-reference\""));});
+console.log('TOTAL '+tests.length+' satisfactorias');
